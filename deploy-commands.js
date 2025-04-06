@@ -24,9 +24,14 @@ const commands = [
         .addStringOption(option =>
             option.setName('player')
                 .setDescription('Player name')
-                .setRequired(true))
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('flagged')
+        .setDescription('View list of flagged suspicious players'),
 ]
     .map(command => command.toJSON());
+
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 

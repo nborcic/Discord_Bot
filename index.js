@@ -185,29 +185,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
     }
 
+    //  /flagged command
+    if (command === 'flagged') {
+        const { FlaggedPlayer } = require('./db');
+
+        try {
+            const flaggedPlayers = await FlaggedPlayer.find().sort({ flaggedAt: -1 }).limit(10);
+
+            if (!flaggedPlayers.length) {
+                await interaction.reply('✅ No flagged players yet. Everything looks clean!');
+                return;
+            }
+
+            const reportLines = flaggedPlayers.map((p, index) => (
+                `**${index + 1}. ${p.playerName}** — ⚠️ ${p.suspiciousMatches}/${p.matchesAnalyzed} suspicious matches  
+       KD: ${p.avgKD.toFixed(2)} | Accuracy: ${p.avgAccuracy.toFixed(1)}% | Headshots >50m: ${p.avgHeadshotsOver50m.toFixed(1)}`
+            ));
+
+            await interaction.reply({
+                content: `📋 **Flagged Players**\n\n${reportLines.join('\n\n')}`,
+                ephemeral: false
+            });
+
+        } catch (err) {
+            console.error('❌ Error loading flagged players:', err);
+            await interaction.reply('❌ Could not load flagged players.');
+        }
+    }
     //  /match command
     if (command === 'match') {
         const playerName = interaction.options.getString('player');
         const normalizedName = playerName.toLowerCase();
 
         await interaction.deferReply();
-        if (suspiciousCount >= 3) {
-            const { FlaggedPlayer } = require('./db');
 
-            await FlaggedPlayer.findOneAndUpdate(
-                { playerName },
-                {
-                    playerName,
-                    suspiciousMatches: suspiciousCount,
-                    matchesAnalyzed,
-                    avgKD: Number(avgKD),
-                    avgAccuracy: Number(avgAccuracy),
-                    avgHeadshotsOver50m: Number(avgHeadshots50m),
-                    flaggedAt: new Date()
-                },
-                { upsert: true, new: true }
-            );
-        }
+
 
 
 
@@ -303,6 +315,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 .setFooter({ text: suspiciousCount > 0 ? '⚠️ Suspicious behavior detected' : '✅ No major issues found' })
                 .setTimestamp();
 
+            if (suspiciousCount >= 3) {
+                const { FlaggedPlayer } = require('./db');
+
+                await FlaggedPlayer.findOneAndUpdate(
+                    { playerName },
+                    {
+                        playerName,
+                        suspiciousMatches: suspiciousCount,
+                        matchesAnalyzed,
+                        avgKD: Number(avgKD),
+                        avgAccuracy: Number(avgAccuracy),
+                        avgHeadshotsOver50m: Number(avgHeadshots50m),
+                        flaggedAt: new Date()
+                    },
+                    { upsert: true, new: true }
+                );
+            }
             await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
