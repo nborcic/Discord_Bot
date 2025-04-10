@@ -6,6 +6,20 @@ const axios = require('axios');
 const { Match } = require('./db');
 const { analyzeTelemetry } = require('./analyze');
 
+
+const axiosWithRateLimit = async (url, config = {}) => {
+    try {
+        return  await axios.get(url, config);
+    } catch (err) {
+        if (err.response?.status === 429) {
+            const retryAfter = err.response.headers['retry-after'] || 10;
+            throw new Error(`RATE_LIMITED:${retryAfter}`);
+        } else {
+            throw err;
+        }
+    }
+};
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -28,7 +42,7 @@ const handleMatchCommand = async (interaction) => {
 
     try {
         // 1. Get player ID
-        const playerRes = await axios.get(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
+        const playerRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
             headers: {
                 Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                 Accept: 'application/vnd.api+json',
@@ -38,7 +52,7 @@ const handleMatchCommand = async (interaction) => {
         const matchId = player.relationships.matches.data[0].id;
 
         // 2. Get match metadata
-        const matchRes = await axios.get(`https://api.pubg.com/shards/steam/matches/${matchId}`, {
+        const matchRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/matches/${matchId}`, {
             headers: {
                 Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                 Accept: 'application/vnd.api+json',
@@ -50,7 +64,7 @@ const handleMatchCommand = async (interaction) => {
         const stats = participant.attributes.stats;
 
         const telemetryUrl = matchRes.data.included.find(a => a.type === 'asset').attributes.URL;
-        const telemetryRes = await axios.get(telemetryUrl);
+        const telemetryRes = await axiosWithRateLimit(telemetryUrl);
         const telemetry = telemetryRes.data;
 
         // 3. Analyze telemetry
@@ -124,7 +138,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.deferReply();
 
         try {
-            const playerRes = await axios.get(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
+            const playerRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
                 headers: {
                     Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                     Accept: 'application/vnd.api+json',
@@ -136,7 +150,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
             let seasonId = 'lifetime';
             if (seasonType === 'current') {
-                const seasonList = await axios.get(`https://api.pubg.com/shards/steam/seasons`, {
+                const seasonList = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/seasons`, {
                     headers: {
                         Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                         Accept: 'application/vnd.api+json',
@@ -147,7 +161,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
                 seasonId = currentSeason.id;
             }
 
-            const statsRes = await axios.get(`https://api.pubg.com/shards/steam/players/${playerId}/seasons/${seasonId}`, {
+            const statsRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/players/${playerId}/seasons/${seasonId}`, {
                 headers: {
                     Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                     Accept: 'application/vnd.api+json',
@@ -219,13 +233,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         await interaction.deferReply();
 
-
-
-
-
         try {
             // 1. Get player ID
-            const playerRes = await axios.get(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
+            const playerRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/players?filter[playerNames]=${playerName}`, {
                 headers: {
                     Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                     Accept: 'application/vnd.api+json',
@@ -233,17 +243,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
             });
 
             const player = playerRes.data.data[0];
-            const matchList = player.relationships.matches.data.slice(0, 10); // first 10 matches
+            const matchList = player.relationships.matches.data.slice(0, 50); // Get all matches for the player cca.50
 
             // 2. Get current season ID
-            const seasonRes = await axios.get(`https://api.pubg.com/shards/steam/seasons`, {
+            const seasonRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/seasons`, {
                 headers: {
                     Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                     Accept: 'application/vnd.api+json',
                 },
             });
-            const currentSeason = seasonRes.data.data.find(season => season.attributes.isCurrentSeason);
-            const seasonId = currentSeason.id;
+            const rankedSeason = seasonRes.data.data.find(season =>
+                season.attributes.isCurrentSeason &&
+                season.id.startsWith('division.bro.official')
+            );
+
+            if (!rankedSeason) {
+                await interaction.editReply('❌ Could not find the current ranked season.');
+                return;
+            }
+            const seasonId = rankedSeason.id;
 
             let totalKills = 0;
             let totalKD = 0;
@@ -255,7 +273,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             for (const matchRef of matchList) {
                 try {
                     const matchId = matchRef.id;
-                    const matchRes = await axios.get(`https://api.pubg.com/shards/steam/matches/${matchId}`, {
+                    const matchRes = await axiosWithRateLimit(`https://api.pubg.com/shards/steam/matches/${matchId}`, {
                         headers: {
                             Authorization: `Bearer ${process.env.PUBG_API_KEY}`,
                             Accept: 'application/vnd.api+json',
@@ -268,13 +286,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
                     const included = matchRes.data.included;
                     const participant = included.find(p => p.type === 'participant' && p.attributes.stats.name.toLowerCase() === normalizedName);
                     if (!participant) continue;
-
+                    if (match.gameMode !== 'squad-fpp') continue;
+                    const createdAt = new Date(match.createdAt);
+                    const seasonStart = new Date(rankedSeason.attributes.startDate);
+                    const seasonEnd = new Date(rankedSeason.attributes.endDate);
+                    if (createdAt < seasonStart || createdAt > seasonEnd) continue;
                     const stats = participant.attributes.stats;
 
                     const asset = included.find(a => a.type === 'asset');
                     if (!asset || !asset.attributes?.URL) continue;
 
-                    const telemetryRes = await axios.get(asset.attributes.URL);
+                    const telemetryRes = await axiosWithRateLimit(asset.attributes.URL);
                     const telemetry = telemetryRes.data;
 
                     const analysis = analyzeTelemetry(telemetry, playerName);
@@ -304,7 +326,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle(`🎮 Match Analysis for ${playerName}`)
                 .setColor(suspiciousCount > 3 ? 0xff0000 : 0x00AE86)
-                .setDescription(`Last ${matchesAnalyzed} squad-fpp matches (Current Season)`)
+                .setDescription(`Last ${matchesAnalyzed} **Ranked** squad-fpp matches`)
                 .addFields(
                     { name: 'Avg Kills', value: avgKills, inline: true },
                     { name: 'Avg KD', value: avgKD, inline: true },
@@ -335,8 +357,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
             await interaction.editReply({ embeds: [embed] });
 
         } catch (error) {
+            if (error.message?.startsWith('RATE_LIMITED')) {
+                const waitTime = error.message.split(':')[1];
+                await interaction.editReply(`⏳ PUBG API rate limit hit. Please try again in **${waitTime} seconds**.`);
+                return;
+            }
+        
             console.error('❌ Error in /match:', error.response?.data || error.message);
-            interaction.editReply('❌ Failed to analyze matches.');
+            await interaction.editReply('❌ Failed to analyze matches.');
         }
     }
 
